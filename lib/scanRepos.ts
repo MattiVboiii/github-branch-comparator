@@ -11,26 +11,30 @@ export type GitHubRepo = {
 export type ScanResult = {
   repo: string;
   defaultBranch: string;
-  devBranch: "dev" | "develop";
+  devBranch: string;
   aheadBy: number;
-  commits: Array<{ sha: string; message: string }>;
+  commits: Array<{ sha: string; fullSha: string; message: string }>;
 };
 
 export async function fetchAllRepos(
   headers: HeadersInit,
+  maxRepos = Number.POSITIVE_INFINITY,
 ): Promise<GitHubRepo[]> {
   const all: GitHubRepo[] = [];
   let page = 1;
 
   while (true) {
     const res = await fetch(
-      `https://api.github.com/user/repos?per_page=100&visibility=all&page=${page}`,
+      `https://api.github.com/user/repos?per_page=100&visibility=all&sort=updated&direction=desc&page=${page}`,
       { headers },
     );
     if (!res.ok) throw new Error(`Failed to fetch repos: ${res.status}`);
     const batch: GitHubRepo[] = await res.json();
     if (batch.length === 0) break;
     all.push(...batch);
+    if (all.length >= maxRepos) {
+      return all.slice(0, maxRepos);
+    }
     if (batch.length < 100) break;
     page++;
   }
@@ -41,10 +45,12 @@ export async function fetchAllRepos(
 export async function scanRepoPendingCommits(
   repo: GitHubRepo,
   headers: HeadersInit,
-): Promise<ScanResult | null> {
+  devBranches: string[] = ["dev", "develop"],
+): Promise<ScanResult[]> {
   const defaultBranch = repo.default_branch;
+  const results: ScanResult[] = [];
 
-  for (const devBranch of ["dev", "develop"] as const) {
+  for (const devBranch of devBranches) {
     try {
       const compareRes = await fetch(
         `https://api.github.com/repos/${repo.full_name}/compare/${defaultBranch}...${devBranch}`,
@@ -56,34 +62,40 @@ export async function scanRepoPendingCommits(
       const data = await compareRes.json();
 
       if (data.ahead_by > 0) {
-        return {
+        results.push({
           repo: repo.full_name,
           defaultBranch,
           devBranch,
           aheadBy: data.ahead_by as number,
           commits: (data.commits as GitHubCommit[]).map((c) => ({
             sha: c.sha.slice(0, 7),
+            fullSha: c.sha,
             message: c.commit.message.split("\n")[0],
           })),
-        };
+        });
       }
     } catch {
       // branch not found or compare unavailable; skip silently
     }
   }
 
-  return null;
+  return results;
 }
 
 export async function scanPendingCommitsWithHeaders(
   headers: HeadersInit,
+  devBranches: string[] = ["dev", "develop"],
 ): Promise<ScanResult[]> {
   const repos = await fetchAllRepos(headers);
   const results: ScanResult[] = [];
 
   for (const repo of repos) {
-    const result = await scanRepoPendingCommits(repo, headers);
-    if (result) results.push(result);
+    const repoResults = await scanRepoPendingCommits(
+      repo,
+      headers,
+      devBranches,
+    );
+    if (repoResults.length > 0) results.push(...repoResults);
   }
 
   return results;

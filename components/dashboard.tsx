@@ -29,8 +29,10 @@ type ScanResult = {
   defaultBranch: string;
   devBranch: string;
   aheadBy: number;
-  commits: Array<{ sha: string; message: string }>;
+  commits: Array<{ sha: string; fullSha: string; message: string }>;
 };
+
+type ScanLimit = 50 | 100 | 200 | "all";
 
 export function Dashboard() {
   const [results, setResults] = useState<ScanResult[]>([]);
@@ -39,10 +41,10 @@ export function Dashboard() {
   const [scanned, setScanned] = useState(0);
   const [total, setTotal] = useState(0);
   const [searchQuery, setSearchQuery] = useState("");
-  const [branchFilter, setBranchFilter] = useState<"all" | "dev" | "develop">(
-    "all",
-  );
+  const [branchFilter, setBranchFilter] = useState<string>("all");
   const [minAheadBy, setMinAheadBy] = useState(0);
+  const [scanLimit, setScanLimit] = useState<ScanLimit>(100);
+  const [branchesInput, setBranchesInput] = useState("dev, develop");
 
   const maxAheadBy = useMemo(
     () => Math.max(1, ...results.map((result) => result.aheadBy)),
@@ -80,8 +82,18 @@ export function Dashboard() {
     setScanned(0);
     setTotal(0);
     setIsScanning(true);
+    setBranchFilter("all");
 
-    const eventSource = new EventSource("/api/scan");
+    const params = new URLSearchParams();
+    params.set("limit", scanLimit.toString());
+    const branchesList = branchesInput
+      .split(",")
+      .map((b) => b.trim())
+      .filter((b) => b.length > 0);
+    if (branchesList.length > 0) {
+      params.set("branches", branchesList.join(","));
+    }
+    const eventSource = new EventSource(`/api/scan?${params.toString()}`);
 
     eventSource.addEventListener("message", (event) => {
       try {
@@ -131,21 +143,59 @@ export function Dashboard() {
             Pending Merges
           </h2>
           <p className="text-sm text-muted-foreground">
-            Repos where <code className="font-mono text-xs">dev</code> /{" "}
-            <code className="font-mono text-xs">develop</code> is ahead of the
-            default branch
+            Repos where the specified dev branch(es) are ahead of the default
+            branch
+          </p>
+          <p className="text-xs text-muted-foreground mt-1">
+            Scans most recently updated repos first for faster results.
           </p>
         </div>
-        <Button
-          onClick={handleScan}
-          disabled={isScanning}
-          className="w-full sm:w-auto"
-        >
-          <RefreshCw
-            className={`mr-2 h-4 w-4 ${isScanning ? "animate-spin" : ""}`}
-          />
-          {isScanning ? "Scanning…" : "Scan Repos"}
-        </Button>
+        <div className="flex w-full sm:w-auto flex-col sm:flex-row items-stretch sm:items-center gap-2">
+          <div className="space-y-1">
+            <label
+              htmlFor="branches-input"
+              className="text-xs text-muted-foreground"
+            >
+              Dev branch(es) to compare
+            </label>
+            <input
+              id="branches-input"
+              value={branchesInput}
+              onChange={(event) => setBranchesInput(event.target.value)}
+              placeholder="e.g. dev, develop, staging"
+              disabled={isScanning}
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40 disabled:opacity-50"
+            />
+          </div>
+          <select
+            aria-label="Scan limit"
+            value={scanLimit}
+            onChange={(event) =>
+              setScanLimit(
+                event.target.value === "all"
+                  ? "all"
+                  : (Number(event.target.value) as 50 | 100 | 200),
+              )
+            }
+            disabled={isScanning}
+            className="h-10 rounded-md border bg-background px-3 text-sm outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40"
+          >
+            <option value={50}>50 repos</option>
+            <option value={100}>100 repos</option>
+            <option value={200}>200 repos</option>
+            <option value="all">All repos</option>
+          </select>
+          <Button
+            onClick={handleScan}
+            disabled={isScanning}
+            className="w-full sm:w-auto"
+          >
+            <RefreshCw
+              className={`mr-2 h-4 w-4 ${isScanning ? "animate-spin" : ""}`}
+            />
+            {isScanning ? "Scanning…" : "Scan Repos"}
+          </Button>
+        </div>
       </div>
 
       <Separator />
@@ -179,16 +229,19 @@ export function Dashboard() {
               <select
                 id="filter-branch"
                 value={branchFilter}
-                onChange={(event) =>
-                  setBranchFilter(
-                    event.target.value as "all" | "dev" | "develop",
-                  )
-                }
+                onChange={(event) => setBranchFilter(event.target.value)}
                 className="h-9 w-full rounded-md border bg-background px-3 text-sm outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40"
               >
                 <option value="all">All</option>
-                <option value="dev">dev</option>
-                <option value="develop">develop</option>
+                {branchesInput
+                  .split(",")
+                  .map((b) => b.trim())
+                  .filter((b) => b.length > 0)
+                  .map((b) => (
+                    <option key={b} value={b}>
+                      {b}
+                    </option>
+                  ))}
               </select>
             </div>
 
@@ -266,7 +319,7 @@ export function Dashboard() {
           <GitMerge className="mb-4 h-8 w-8 sm:h-10 sm:w-10 text-muted-foreground" />
           <p className="text-base sm:text-lg font-medium">All caught up!</p>
           <p className="text-xs sm:text-sm text-muted-foreground mt-1">
-            No repos have unmerged commits on dev/develop.
+            No repos have unmerged commits on the specified branch(es).
           </p>
         </div>
       )}
@@ -309,6 +362,10 @@ export function Dashboard() {
 
 function RepoCard({ result }: { result: ScanResult }) {
   const [org, name] = result.repo.split("/");
+
+  function getCompareUrl(fullSha: string) {
+    return `https://github.com/${result.repo}/compare/${encodeURIComponent(result.defaultBranch)}...${fullSha}`;
+  }
 
   return (
     <Card className="flex h-full flex-col overflow-hidden min-w-0 w-full">
@@ -353,12 +410,26 @@ function RepoCard({ result }: { result: ScanResult }) {
               {result.commits.map((commit) => (
                 <TableRow key={commit.sha}>
                   <TableCell className="px-3 sm:px-4 py-2 border-r whitespace-nowrap">
-                    <code className="font-mono text-xs text-muted-foreground">
-                      {commit.sha}
-                    </code>
+                    <a
+                      href={getCompareUrl(commit.fullSha)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-block"
+                    >
+                      <code className="font-mono text-xs text-muted-foreground underline-offset-2 hover:underline">
+                        {commit.sha}
+                      </code>
+                    </a>
                   </TableCell>
                   <TableCell className="px-3 sm:px-4 py-2 text-xs leading-snug whitespace-normal wrap-break-word">
-                    {commit.message}
+                    <a
+                      href={getCompareUrl(commit.fullSha)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="hover:underline underline-offset-2"
+                    >
+                      {commit.message}
+                    </a>
                   </TableCell>
                 </TableRow>
               ))}

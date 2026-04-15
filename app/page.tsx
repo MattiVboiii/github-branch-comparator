@@ -36,8 +36,7 @@ export default async function Page() {
             </h1>
             <p className="mt-3 max-w-md text-sm sm:text-base text-muted-foreground">
               Sign in with GitHub to scan your repositories for unmerged commits
-              on <code className="font-mono text-xs sm:text-sm">dev</code> or{" "}
-              <code className="font-mono text-xs sm:text-sm">develop</code>.
+              on (for example) dev branches.
             </p>
           </div>
         ) : (
