@@ -22,7 +22,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { AlertCircle, GitBranch, GitMerge, RefreshCw } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 type ScanResult = {
   repo: string;
@@ -38,6 +38,41 @@ export function Dashboard() {
   const [isScanning, setIsScanning] = useState(false);
   const [scanned, setScanned] = useState(0);
   const [total, setTotal] = useState(0);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [branchFilter, setBranchFilter] = useState<"all" | "dev" | "develop">(
+    "all",
+  );
+  const [minAheadBy, setMinAheadBy] = useState(0);
+
+  const maxAheadBy = useMemo(
+    () => Math.max(1, ...results.map((result) => result.aheadBy)),
+    [results],
+  );
+
+  const filteredResults = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+
+    return results.filter((result) => {
+      if (branchFilter !== "all" && result.devBranch !== branchFilter) {
+        return false;
+      }
+
+      if (result.aheadBy < minAheadBy) {
+        return false;
+      }
+
+      if (!query) {
+        return true;
+      }
+
+      const matchesRepo = result.repo.toLowerCase().includes(query);
+      const matchesCommit = result.commits.some((commit) =>
+        commit.message.toLowerCase().includes(query),
+      );
+
+      return matchesRepo || matchesCommit;
+    });
+  }, [results, searchQuery, branchFilter, minAheadBy]);
 
   function handleScan() {
     setError(null);
@@ -115,6 +150,90 @@ export function Dashboard() {
 
       <Separator />
 
+      {!isScanning && results.length > 0 && (
+        <div className="rounded-lg border bg-card p-3 sm:p-4">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[1fr_auto_auto] lg:items-end">
+            <div className="space-y-1">
+              <label
+                htmlFor="filter-search"
+                className="text-xs text-muted-foreground"
+              >
+                Search repo or commit message
+              </label>
+              <input
+                id="filter-search"
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                placeholder="e.g. auth, poker, org/repo"
+                className="h-9 w-full rounded-md border bg-background px-3 text-sm outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40"
+              />
+            </div>
+
+            <div className="space-y-1">
+              <label
+                htmlFor="filter-branch"
+                className="text-xs text-muted-foreground"
+              >
+                Branch
+              </label>
+              <select
+                id="filter-branch"
+                value={branchFilter}
+                onChange={(event) =>
+                  setBranchFilter(
+                    event.target.value as "all" | "dev" | "develop",
+                  )
+                }
+                className="h-9 w-full rounded-md border bg-background px-3 text-sm outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40"
+              >
+                <option value="all">All</option>
+                <option value="dev">dev</option>
+                <option value="develop">develop</option>
+              </select>
+            </div>
+
+            <div className="space-y-1 sm:col-span-2 lg:col-span-1">
+              <div className="flex items-center justify-between">
+                <label
+                  htmlFor="filter-ahead"
+                  className="text-xs text-muted-foreground"
+                >
+                  Min ahead by
+                </label>
+                <span className="text-xs font-medium tabular-nums">
+                  {minAheadBy === 0 ? "Any" : `${minAheadBy}+`}
+                </span>
+              </div>
+              <input
+                id="filter-ahead"
+                type="range"
+                min={0}
+                max={maxAheadBy}
+                step={1}
+                value={minAheadBy}
+                onChange={(event) => setMinAheadBy(Number(event.target.value))}
+                className="h-9 w-full accent-primary"
+              />
+            </div>
+
+            <Button
+              variant="outline"
+              onClick={() => {
+                setSearchQuery("");
+                setBranchFilter("all");
+                setMinAheadBy(0);
+              }}
+              className="h-9"
+            >
+              Clear filters
+            </Button>
+          </div>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Showing {filteredResults.length} of {results.length} repo(s)
+          </p>
+        </div>
+      )}
+
       {error && (
         <div className="flex items-center gap-2 rounded-md border border-destructive/50 bg-destructive/10 p-4 text-destructive text-sm">
           <AlertCircle className="h-4 w-4 shrink-0" />
@@ -152,14 +271,25 @@ export function Dashboard() {
         </div>
       )}
 
-      {!isScanning && results.length > 0 && (
-        <div className="grid gap-4 grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-          {results.map((result) => (
+      {!isScanning && filteredResults.length > 0 && (
+        <div className="grid gap-4 grid-cols-1 md:grid-cols-2 xl:grid-cols-3">
+          {filteredResults.map((result) => (
             <RepoCard
               key={`${result.repo}-${result.devBranch}`}
               result={result}
             />
           ))}
+        </div>
+      )}
+
+      {!isScanning && results.length > 0 && filteredResults.length === 0 && (
+        <div className="flex flex-col items-center justify-center rounded-lg border border-dashed py-10 text-center">
+          <p className="text-sm font-medium">
+            No results match the active filters
+          </p>
+          <p className="text-xs text-muted-foreground mt-1">
+            Try broadening your search or clearing filters.
+          </p>
         </div>
       )}
 
@@ -181,7 +311,7 @@ function RepoCard({ result }: { result: ScanResult }) {
   const [org, name] = result.repo.split("/");
 
   return (
-    <Card className="flex flex-col overflow-hidden">
+    <Card className="flex h-full flex-col overflow-hidden min-w-0 w-full">
       <CardHeader className="pb-3">
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0 flex-1">
@@ -208,32 +338,32 @@ function RepoCard({ result }: { result: ScanResult }) {
       </CardHeader>
       <CardContent className="flex-1 p-0">
         <ScrollArea className="h-40 sm:h-44">
-          <div className="overflow-x-auto">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="px-3 sm:px-4 py-2 text-xs w-12">
-                    SHA
-                  </TableHead>
-                  <TableHead className="px-3 sm:px-4 py-2 text-xs">
-                    Message
-                  </TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {result.commits.map((commit) => (
-                  <TableRow key={commit.sha}>
-                    <TableCell className="px-3 sm:px-4 py-2 font-mono text-xs text-muted-foreground whitespace-nowrap">
+          <Table className="table-fixed">
+            <TableHeader>
+              <TableRow>
+                <TableHead className="px-3 sm:px-4 py-2 text-xs w-25 border-r">
+                  SHA
+                </TableHead>
+                <TableHead className="px-3 sm:px-4 py-2 text-xs whitespace-normal">
+                  Message
+                </TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {result.commits.map((commit) => (
+                <TableRow key={commit.sha}>
+                  <TableCell className="px-3 sm:px-4 py-2 border-r whitespace-nowrap">
+                    <code className="font-mono text-xs text-muted-foreground">
                       {commit.sha}
-                    </TableCell>
-                    <TableCell className="px-3 sm:px-4 py-2 text-xs leading-snug">
-                      <span className="line-clamp-2">{commit.message}</span>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
+                    </code>
+                  </TableCell>
+                  <TableCell className="px-3 sm:px-4 py-2 text-xs leading-snug whitespace-normal wrap-break-word">
+                    {commit.message}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
         </ScrollArea>
       </CardContent>
     </Card>

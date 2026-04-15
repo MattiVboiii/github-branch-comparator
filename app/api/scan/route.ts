@@ -1,46 +1,17 @@
-import { authOptions } from "@/lib/auth";
-import { getServerSession } from "next-auth";
+import { fetchAllRepos, scanRepoPendingCommits } from "@/lib/scanRepos";
+import { getToken } from "next-auth/jwt";
 import { NextRequest, NextResponse } from "next/server";
-
-type GitHubCommit = {
-  sha: string;
-  commit: { message: string };
-};
-
-type GitHubRepo = {
-  full_name: string;
-  default_branch: string;
-};
-
-async function fetchAllRepos(headers: HeadersInit): Promise<GitHubRepo[]> {
-  const all: GitHubRepo[] = [];
-  let page = 1;
-
-  while (true) {
-    const res = await fetch(
-      `https://api.github.com/user/repos?per_page=100&visibility=all&page=${page}`,
-      { headers },
-    );
-    if (!res.ok) throw new Error(`Failed to fetch repos: ${res.status}`);
-    const batch: GitHubRepo[] = await res.json();
-    if (batch.length === 0) break;
-    all.push(...batch);
-    if (batch.length < 100) break;
-    page++;
-  }
-
-  return all;
-}
 
 export async function GET(request: NextRequest) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.accessToken) {
+    // Read the access token from the encrypted JWT cookie (never sent to the client).
+    const token = await getToken({ req: request });
+    if (!token?.accessToken) {
       return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
     }
 
     const headers = {
-      Authorization: `token ${session.accessToken}`,
+      Authorization: `token ${token.accessToken as string}`,
       Accept: "application/vnd.github+json",
     };
 
@@ -66,48 +37,22 @@ export async function GET(request: NextRequest) {
 
           for (let i = 0; i < repos.length; i++) {
             const repo = repos[i];
-            const defaultBranch = repo.default_branch;
+            const result = await scanRepoPendingCommits(repo, headers);
 
-            for (const devBranch of ["dev", "develop"]) {
-              try {
-                const compareRes = await fetch(
-                  `https://api.github.com/repos/${repo.full_name}/compare/${defaultBranch}...${devBranch}`,
-                  { headers },
-                );
+            if (result) {
+              results.push(result);
 
-                if (!compareRes.ok) continue;
-
-                const data = await compareRes.json();
-
-                if (data.ahead_by > 0) {
-                  const result = {
-                    repo: repo.full_name,
-                    defaultBranch,
-                    devBranch,
-                    aheadBy: data.ahead_by as number,
-                    commits: (data.commits as GitHubCommit[]).map((c) => ({
-                      sha: c.sha.slice(0, 7),
-                      message: c.commit.message.split("\n")[0],
-                    })),
-                  };
-                  results.push(result);
-
-                  // Send update with new result
-                  controller.enqueue(
-                    encoder.encode(
-                      `data: ${JSON.stringify({
-                        type: "progress",
-                        scanned: i + 1,
-                        total: repos.length,
-                        results: [result],
-                      })}\n\n`,
-                    ),
-                  );
-                  break;
-                }
-              } catch {
-                // branch not found, skip silently
-              }
+              // Send update with new result
+              controller.enqueue(
+                encoder.encode(
+                  `data: ${JSON.stringify({
+                    type: "progress",
+                    scanned: i + 1,
+                    total: repos.length,
+                    results: [result],
+                  })}\n\n`,
+                ),
+              );
             }
 
             // Send progress update even if no result found
