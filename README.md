@@ -1,6 +1,6 @@
-# GitHub Branch Comparer
+# GitHub Branch Comparator
 
-GitHub Branch Comparer helps you quickly find repositories where your working branch (e.g. `dev`, `develop`, `staging`, or any custom name) is ahead of the default branch (usually `main`).
+GitHub Branch Comparator helps you quickly find repositories where your working branch (e.g. `dev`, `develop`, `staging`, or any custom name) is ahead of the default branch (usually `main`).
 
 This is useful for teams that:
 
@@ -40,7 +40,7 @@ pnpm install
 1. Go to: https://github.com/settings/developers
 2. Click **New OAuth App**
 3. Use these values for local development:
-   - **Application name**: `GitHub Branch Comparer` (or any name)
+   - **Application name**: `GitHub Branch Comparator` (or any name)
    - **Homepage URL**: `http://localhost:3000`
    - **Authorization callback URL**: `http://localhost:3000/api/auth/callback/github`
 4. After creation, copy your:

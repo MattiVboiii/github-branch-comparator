@@ -1,6 +1,10 @@
 type GitHubCommit = {
   sha: string;
-  commit: { message: string };
+  commit: {
+    message: string;
+    author?: { date?: string };
+    committer?: { date?: string };
+  };
 };
 
 export type GitHubRepo = {
@@ -13,7 +17,12 @@ export type ScanResult = {
   defaultBranch: string;
   devBranch: string;
   aheadBy: number;
-  commits: Array<{ sha: string; fullSha: string; message: string }>;
+  commits: Array<{
+    sha: string;
+    fullSha: string;
+    message: string;
+    committedAt: string | null;
+  }>;
 };
 
 export async function fetchAllRepos(
@@ -71,6 +80,8 @@ export async function scanRepoPendingCommits(
             sha: c.sha.slice(0, 7),
             fullSha: c.sha,
             message: c.commit.message.split("\n")[0],
+            committedAt:
+              c.commit.author?.date ?? c.commit.committer?.date ?? null,
           })),
         });
       }

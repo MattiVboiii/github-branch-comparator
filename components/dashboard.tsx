@@ -1,139 +1,41 @@
 "use client";
 
-import { Badge } from "@/components/ui/badge";
+import { RepoCard } from "@/components/dashboard/repo-card";
+import { ScanSkeletons } from "@/components/dashboard/scan-skeletons";
+import { useDashboardScan } from "@/components/dashboard/use-dashboard-scan";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
-import { Skeleton } from "@/components/ui/skeleton";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+import type { CommitSortOrder, RepoSortOrder } from "@/lib/dashboard/types";
 import { AlertCircle, GitBranch, GitMerge, RefreshCw } from "lucide-react";
-import { useMemo, useState } from "react";
-
-type ScanResult = {
-  repo: string;
-  defaultBranch: string;
-  devBranch: string;
-  aheadBy: number;
-  commits: Array<{ sha: string; fullSha: string; message: string }>;
-};
-
-type ScanLimit = 50 | 100 | 200 | "all";
 
 export function Dashboard() {
-  const [results, setResults] = useState<ScanResult[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [isScanning, setIsScanning] = useState(false);
-  const [scanned, setScanned] = useState(0);
-  const [total, setTotal] = useState(0);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [branchFilter, setBranchFilter] = useState<string>("all");
-  const [minAheadBy, setMinAheadBy] = useState(0);
-  const [scanLimit, setScanLimit] = useState<ScanLimit>(100);
-  const [branchesInput, setBranchesInput] = useState("dev, develop");
-
-  const maxAheadBy = useMemo(
-    () => Math.max(1, ...results.map((result) => result.aheadBy)),
-    [results],
-  );
-
-  const filteredResults = useMemo(() => {
-    const query = searchQuery.trim().toLowerCase();
-
-    return results.filter((result) => {
-      if (branchFilter !== "all" && result.devBranch !== branchFilter) {
-        return false;
-      }
-
-      if (result.aheadBy < minAheadBy) {
-        return false;
-      }
-
-      if (!query) {
-        return true;
-      }
-
-      const matchesRepo = result.repo.toLowerCase().includes(query);
-      const matchesCommit = result.commits.some((commit) =>
-        commit.message.toLowerCase().includes(query),
-      );
-
-      return matchesRepo || matchesCommit;
-    });
-  }, [results, searchQuery, branchFilter, minAheadBy]);
-
-  function handleScan() {
-    setError(null);
-    setResults([]);
-    setScanned(0);
-    setTotal(0);
-    setIsScanning(true);
-    setBranchFilter("all");
-
-    const params = new URLSearchParams();
-    params.set("limit", scanLimit.toString());
-    const branchesList = branchesInput
-      .split(",")
-      .map((b) => b.trim())
-      .filter((b) => b.length > 0);
-    if (branchesList.length > 0) {
-      params.set("branches", branchesList.join(","));
-    }
-    const eventSource = new EventSource(`/api/scan?${params.toString()}`);
-
-    eventSource.addEventListener("message", (event) => {
-      try {
-        const data = JSON.parse(event.data);
-
-        switch (data.type) {
-          case "start":
-            setTotal(data.total);
-            break;
-
-          case "progress":
-            setScanned(data.scanned);
-            if (data.results.length > 0) {
-              setResults((prev) => [...prev, ...data.results]);
-            }
-            break;
-
-          case "complete":
-            setResults(data.results);
-            setIsScanning(false);
-            eventSource.close();
-            break;
-
-          case "error":
-            setError(data.error);
-            setIsScanning(false);
-            eventSource.close();
-            break;
-        }
-      } catch (e) {
-        console.error("Failed to parse event", e);
-      }
-    });
-
-    eventSource.addEventListener("error", () => {
-      setError("Connection lost during scan");
-      setIsScanning(false);
-      eventSource.close();
-    });
-  }
+  const {
+    results,
+    error,
+    isScanning,
+    scanned,
+    total,
+    searchQuery,
+    setSearchQuery,
+    branchFilter,
+    setBranchFilter,
+    minAheadBy,
+    setMinAheadBy,
+    scanLimit,
+    setScanLimit,
+    branchesInput,
+    setBranchesInput,
+    repoSortOrder,
+    setRepoSortOrder,
+    commitSortOrder,
+    setCommitSortOrder,
+    maxAheadBy,
+    branchOptions,
+    filteredResults,
+    handleScan,
+    clearFilters,
+  } = useDashboardScan();
 
   return (
     <div className="space-y-6">
@@ -202,7 +104,7 @@ export function Dashboard() {
 
       {!isScanning && results.length > 0 && (
         <div className="rounded-lg border bg-card p-3 sm:p-4">
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[1fr_auto_auto] lg:items-end">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 lg:items-end">
             <div className="space-y-1">
               <label
                 htmlFor="filter-search"
@@ -233,15 +135,51 @@ export function Dashboard() {
                 className="h-9 w-full rounded-md border bg-background px-3 text-sm outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40"
               >
                 <option value="all">All</option>
-                {branchesInput
-                  .split(",")
-                  .map((b) => b.trim())
-                  .filter((b) => b.length > 0)
-                  .map((b) => (
-                    <option key={b} value={b}>
-                      {b}
-                    </option>
-                  ))}
+                {branchOptions.map((branch) => (
+                  <option key={branch} value={branch}>
+                    {branch}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="space-y-1">
+              <label
+                htmlFor="filter-repo-sort"
+                className="text-xs text-muted-foreground"
+              >
+                Repo order
+              </label>
+              <select
+                id="filter-repo-sort"
+                value={repoSortOrder}
+                onChange={(event) =>
+                  setRepoSortOrder(event.target.value as RepoSortOrder)
+                }
+                className="h-9 w-full rounded-md border bg-background px-3 text-sm outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40"
+              >
+                <option value="latest-first">Latest commit first</option>
+                <option value="oldest-first">Oldest commit first</option>
+              </select>
+            </div>
+
+            <div className="space-y-1">
+              <label
+                htmlFor="filter-commit-sort"
+                className="text-xs text-muted-foreground"
+              >
+                Commit order
+              </label>
+              <select
+                id="filter-commit-sort"
+                value={commitSortOrder}
+                onChange={(event) =>
+                  setCommitSortOrder(event.target.value as CommitSortOrder)
+                }
+                className="h-9 w-full rounded-md border bg-background px-3 text-sm outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40"
+              >
+                <option value="newest-first">Newest first</option>
+                <option value="oldest-first">Oldest first</option>
               </select>
             </div>
 
@@ -269,15 +207,7 @@ export function Dashboard() {
               />
             </div>
 
-            <Button
-              variant="outline"
-              onClick={() => {
-                setSearchQuery("");
-                setBranchFilter("all");
-                setMinAheadBy(0);
-              }}
-              className="h-9"
-            >
+            <Button variant="outline" onClick={clearFilters} className="h-9">
               Clear filters
             </Button>
           </div>
@@ -295,22 +225,25 @@ export function Dashboard() {
       )}
 
       {isScanning && (
-        <div className="space-y-3">
-          <div className="space-y-2">
-            <div className="flex justify-between text-sm text-muted-foreground">
-              <span>Scanning repositories...</span>
-              <span className="font-medium">
-                {scanned} / {total}
-              </span>
+        <div className="space-y-4">
+          <div className="space-y-3">
+            <div className="space-y-2">
+              <div className="flex justify-between text-sm text-muted-foreground">
+                <span>Scanning repositories...</span>
+                <span className="font-medium">
+                  {scanned} / {total}
+                </span>
+              </div>
+              <Progress value={total > 0 ? (scanned / total) * 100 : 0} />
             </div>
-            <Progress value={total > 0 ? (scanned / total) * 100 : 0} />
+            {results.length > 0 && (
+              <div className="text-sm text-muted-foreground">
+                Found <span className="font-medium">{results.length}</span>{" "}
+                repo(s) with pending commits
+              </div>
+            )}
           </div>
-          {results.length > 0 && (
-            <div className="text-sm text-muted-foreground">
-              Found <span className="font-medium">{results.length}</span>{" "}
-              repo(s) with pending commits
-            </div>
-          )}
+          <ScanSkeletons />
         </div>
       )}
 
@@ -325,11 +258,12 @@ export function Dashboard() {
       )}
 
       {!isScanning && filteredResults.length > 0 && (
-        <div className="grid gap-4 grid-cols-1 md:grid-cols-2 xl:grid-cols-3">
+        <div className="grid gap-4 grid-cols-1 min-[900px]:grid-cols-2 2xl:grid-cols-3">
           {filteredResults.map((result) => (
             <RepoCard
               key={`${result.repo}-${result.devBranch}`}
               result={result}
+              commitSortOrder={commitSortOrder}
             />
           ))}
         </div>
@@ -356,115 +290,6 @@ export function Dashboard() {
           </p>
         </div>
       )}
-    </div>
-  );
-}
-
-function RepoCard({ result }: { result: ScanResult }) {
-  const [org, name] = result.repo.split("/");
-
-  function getCompareUrl(fullSha: string) {
-    return `https://github.com/${result.repo}/compare/${encodeURIComponent(result.defaultBranch)}...${fullSha}`;
-  }
-
-  return (
-    <Card className="flex h-full flex-col overflow-hidden min-w-0 w-full">
-      <CardHeader className="pb-3">
-        <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0 flex-1">
-            <CardTitle className="truncate text-sm sm:text-base leading-tight">
-              {name}
-            </CardTitle>
-            <CardDescription className="truncate text-xs">
-              {org}
-            </CardDescription>
-          </div>
-          <Badge variant="secondary" className="shrink-0 tabular-nums text-xs">
-            +{result.aheadBy}
-          </Badge>
-        </div>
-        <div className="flex items-center gap-1.5 pt-1 text-xs text-muted-foreground flex-wrap">
-          <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
-            {result.devBranch}
-          </code>
-          <span>→</span>
-          <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
-            {result.defaultBranch}
-          </code>
-        </div>
-      </CardHeader>
-      <CardContent className="flex-1 p-0">
-        <ScrollArea className="h-40 sm:h-44">
-          <Table className="table-fixed">
-            <TableHeader>
-              <TableRow>
-                <TableHead className="px-3 sm:px-4 py-2 text-xs w-25 border-r">
-                  SHA
-                </TableHead>
-                <TableHead className="px-3 sm:px-4 py-2 text-xs whitespace-normal">
-                  Message
-                </TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {result.commits.map((commit) => (
-                <TableRow key={commit.sha}>
-                  <TableCell className="px-3 sm:px-4 py-2 border-r whitespace-nowrap">
-                    <a
-                      href={getCompareUrl(commit.fullSha)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-block"
-                    >
-                      <code className="font-mono text-xs text-muted-foreground underline-offset-2 hover:underline">
-                        {commit.sha}
-                      </code>
-                    </a>
-                  </TableCell>
-                  <TableCell className="px-3 sm:px-4 py-2 text-xs leading-snug whitespace-normal wrap-break-word">
-                    <a
-                      href={getCompareUrl(commit.fullSha)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="hover:underline underline-offset-2"
-                    >
-                      {commit.message}
-                    </a>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </ScrollArea>
-      </CardContent>
-    </Card>
-  );
-}
-
-function ScanSkeletons() {
-  return (
-    <div className="grid gap-4 grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-      {Array.from({ length: 6 }).map((_, i) => (
-        <Card key={i}>
-          <CardHeader className="pb-3">
-            <div className="flex items-start justify-between">
-              <div className="space-y-1.5">
-                <Skeleton className="h-4 w-32" />
-                <Skeleton className="h-3 w-20" />
-              </div>
-              <Skeleton className="h-5 w-8 rounded-full" />
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            {Array.from({ length: 4 }).map((_, j) => (
-              <div key={j} className="flex gap-3">
-                <Skeleton className="h-3 w-12 shrink-0" />
-                <Skeleton className="h-3 flex-1" />
-              </div>
-            ))}
-          </CardContent>
-        </Card>
-      ))}
     </div>
   );
 }

@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "GitHub Branch Comparer",
+  title: "GitHub Branch Comparator",
   description: "See which repos have unmerged commits on dev/develop",
 };
 

@@ -15,7 +15,12 @@ type ScanItem = {
   defaultBranch: string;
   devBranch: string;
   aheadBy: number;
-  commits: Array<{ sha: string; fullSha: string; message: string }>;
+  commits: Array<{
+    sha: string;
+    fullSha: string;
+    message: string;
+    committedAt: string | null;
+  }>;
 };
 
 type CompletedScan = {
