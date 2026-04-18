@@ -24,6 +24,8 @@ export function Dashboard() {
     setMinAheadBy,
     scanLimit,
     setScanLimit,
+    baseBranchInput,
+    setBaseBranchInput,
     branchesInput,
     setBranchesInput,
     repoSortOrder,
@@ -45,20 +47,32 @@ export function Dashboard() {
             Pending Merges
           </h2>
           <p className="text-sm text-muted-foreground">
-            Repos where the specified dev branch(es) are ahead of the default
-            branch
-          </p>
-          <p className="text-xs text-muted-foreground mt-1">
-            Scans most recently updated repos first for faster results.
+            Repos where the selected branch(es) are ahead of the base branch
           </p>
         </div>
         <div className="flex w-full sm:w-auto flex-col sm:flex-row items-stretch sm:items-center gap-2">
           <div className="space-y-1">
             <label
+              htmlFor="base-branch-input"
+              className="text-xs text-muted-foreground"
+            >
+              Base branch(es)
+            </label>
+            <input
+              id="base-branch-input"
+              value={baseBranchInput}
+              onChange={(event) => setBaseBranchInput(event.target.value)}
+              placeholder="e.g. main, master"
+              disabled={isScanning}
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40 disabled:opacity-50"
+            />
+          </div>
+          <div className="space-y-1">
+            <label
               htmlFor="branches-input"
               className="text-xs text-muted-foreground"
             >
-              Dev branch(es) to compare
+              Compare branch(es)
             </label>
             <input
               id="branches-input"
@@ -261,7 +275,7 @@ export function Dashboard() {
         <div className="grid gap-4 grid-cols-1 min-[900px]:grid-cols-2 2xl:grid-cols-3">
           {filteredResults.map((result) => (
             <RepoCard
-              key={`${result.repo}-${result.devBranch}`}
+              key={`${result.repo}-${result.baseBranch}-${result.devBranch}`}
               result={result}
               commitSortOrder={commitSortOrder}
             />

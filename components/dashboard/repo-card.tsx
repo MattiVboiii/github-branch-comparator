@@ -66,7 +66,7 @@ export function RepoCard({
           </code>
           <span>→</span>
           <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
-            {result.defaultBranch}
+            {result.baseBranch}
           </code>
           <span className="ml-auto">{formatRelativeTime(latestCommitAt)}</span>
         </div>
@@ -95,7 +95,7 @@ export function RepoCard({
                       <a
                         href={getCompareUrl(
                           result.repo,
-                          result.defaultBranch,
+                          result.baseBranch,
                           commit.fullSha,
                         )}
                         target="_blank"
@@ -111,7 +111,7 @@ export function RepoCard({
                       <a
                         href={getCompareUrl(
                           result.repo,
-                          result.defaultBranch,
+                          result.baseBranch,
                           commit.fullSha,
                         )}
                         target="_blank"

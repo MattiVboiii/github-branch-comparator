@@ -1,4 +1,8 @@
-import { fetchAllRepos, scanRepoPendingCommits } from "@/lib/scanRepos";
+import {
+  fetchAllRepos,
+  GitHubApiError,
+  scanRepoPendingCommits,
+} from "@/lib/scanRepos";
 import { getToken } from "next-auth/jwt";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -12,7 +16,7 @@ const RATE_LIMIT_MAX_REQUESTS = 6;
 
 type ScanItem = {
   repo: string;
-  defaultBranch: string;
+  baseBranch: string;
   devBranch: string;
   aheadBy: number;
   commits: Array<{
@@ -52,8 +56,11 @@ function buildCacheKey(
   userKey: string,
   repoLimit: number,
   branches: string[],
+  baseBranches: string[],
 ): string {
-  return `${userKey}:${Number.isFinite(repoLimit) ? repoLimit : "all"}:${branches.join(",")}`;
+  const normalizedBase =
+    baseBranches.length > 0 ? baseBranches.join(",") : "__repo_default__";
+  return `${userKey}:${Number.isFinite(repoLimit) ? repoLimit : "all"}:${normalizedBase}:${branches.join(",")}`;
 }
 
 function cleanupExpiredCache(now: number) {
@@ -130,6 +137,31 @@ function createSseError(message: string): NextResponse {
   return new NextResponse(stream, { headers: SSE_HEADERS });
 }
 
+function toErrorMessage(error: unknown): string {
+  if (error instanceof GitHubApiError) {
+    return error.message;
+  }
+
+  if (error instanceof Error && error.message.trim().length > 0) {
+    return error.message;
+  }
+
+  return "Scan failed";
+}
+
+function parseCsvParam(value: string | null): string[] {
+  if (!value) return [];
+
+  return Array.from(
+    new Set(
+      value
+        .split(",")
+        .map((item) => item.trim())
+        .filter((item) => item.length > 0),
+    ),
+  );
+}
+
 function parsePositiveInt(
   value: string | null,
   fallback: number,
@@ -146,7 +178,7 @@ export async function GET(request: NextRequest) {
     // Read the access token from the encrypted JWT cookie (never sent to the client).
     const token = await getToken({ req: request });
     if (!token?.accessToken) {
-      return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+      return createSseError("Not authenticated. Please sign in to GitHub.");
     }
 
     const headers = {
@@ -158,12 +190,18 @@ export async function GET(request: NextRequest) {
     const limitParam = request.nextUrl.searchParams.get("limit");
     const concurrencyParam = request.nextUrl.searchParams.get("concurrency");
     const branchesParam = request.nextUrl.searchParams.get("branches");
-    const devBranches = branchesParam
-      ? branchesParam
-          .split(",")
-          .map((b) => b.trim())
-          .filter((b) => b.length > 0)
-      : ["dev", "develop"];
+    const baseBranchParam = request.nextUrl.searchParams.get("baseBranch");
+    const baseBranches = parseCsvParam(baseBranchParam);
+    const parsedDevBranches = parseCsvParam(branchesParam);
+    const devBranches =
+      parsedDevBranches.length > 0 ? parsedDevBranches : ["dev", "develop"];
+
+    if (branchesParam && parsedDevBranches.length === 0) {
+      return createSseError(
+        "No valid compare branches were provided. Use comma-separated branch names.",
+      );
+    }
+
     const repoLimit =
       limitParam === "all"
         ? Number.POSITIVE_INFINITY
@@ -175,18 +213,26 @@ export async function GET(request: NextRequest) {
     );
 
     const now = Date.now();
-    const cacheKey = buildCacheKey(userKey, repoLimit, devBranches);
+    const cacheKey = buildCacheKey(
+      userKey,
+      repoLimit,
+      devBranches,
+      baseBranches,
+    );
     cleanupExpiredCache(now);
 
     const cached = scanCache.get(cacheKey);
     if (cached && cached.expiresAt > now) {
       return createSseFromPayload(cached.payload);
     }
-
     const inFlight = inFlightScans.get(cacheKey);
     if (inFlight) {
-      const payload = await inFlight;
-      return createSseFromPayload(payload);
+      try {
+        const payload = await inFlight;
+        return createSseFromPayload(payload);
+      } catch (error) {
+        return createSseError(toErrorMessage(error));
+      }
     }
 
     if (isRateLimited(userKey, now)) {
@@ -237,6 +283,7 @@ export async function GET(request: NextRequest) {
                   repo,
                   headers,
                   devBranches,
+                  baseBranches,
                 );
 
                 if (repoResults.length > 0) {
@@ -305,8 +352,7 @@ export async function GET(request: NextRequest) {
           );
           controller.close();
         } catch (error) {
-          const message =
-            error instanceof Error ? error.message : "Scan failed";
+          const message = toErrorMessage(error);
           rejectInFlight?.(error);
           inFlightScans.delete(cacheKey);
           controller.enqueue(
@@ -321,7 +367,6 @@ export async function GET(request: NextRequest) {
 
     return new NextResponse(stream, { headers: SSE_HEADERS });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Scan failed";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return createSseError(toErrorMessage(error));
   }
 }

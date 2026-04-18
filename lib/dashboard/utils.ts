@@ -109,10 +109,10 @@ export function sortCommits(
 
 export function getCompareUrl(
   repo: string,
-  defaultBranch: string,
+  baseBranch: string,
   fullSha: string,
 ): string {
-  return `https://github.com/${repo}/compare/${encodeURIComponent(defaultBranch)}...${fullSha}`;
+  return `https://github.com/${repo}/compare/${encodeURIComponent(baseBranch)}...${fullSha}`;
 }
 
 export function formatCommitTimestamp(iso: string | null): string {

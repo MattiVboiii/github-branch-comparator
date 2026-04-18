@@ -1,6 +1,6 @@
 export type ScanResult = {
   repo: string;
-  defaultBranch: string;
+  baseBranch: string;
   devBranch: string;
   aheadBy: number;
   commits: Array<{
