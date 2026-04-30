@@ -1,18 +1,30 @@
 import {
-  fetchAllRepos,
+  consumeDistributedRateLimit,
+  getDistributedValue,
+  releaseDistributedLock,
+  setDistributedValue,
+  tryAcquireDistributedLock,
+} from "@/lib/distributed-state";
+import { logger } from "@/lib/logger";
+import {
   GitHubApiError,
+  RepoFilter,
+  resolveReposForScan,
   scanRepoPendingCommits,
 } from "@/lib/scanRepos";
+import { isValidBranchName, isValidRepoFilterToken } from "@/lib/validation";
 import { getToken } from "next-auth/jwt";
 import { NextRequest, NextResponse } from "next/server";
 
 const DEFAULT_REPO_LIMIT = 100;
 const MAX_REPO_LIMIT = 500;
-const DEFAULT_CONCURRENCY = 8;
-const MAX_CONCURRENCY = 20;
+const DEFAULT_CONCURRENCY = 5;
 const SCAN_CACHE_TTL_MS = 2 * 60 * 1000;
 const RATE_LIMIT_WINDOW_MS = 60 * 1000;
 const RATE_LIMIT_MAX_REQUESTS = 6;
+const INFLIGHT_LOCK_TTL_MS = 90 * 1000;
+const INFLIGHT_WAIT_TIMEOUT_MS = 30 * 1000;
+const INFLIGHT_WAIT_POLL_MS = 350;
 
 type ScanItem = {
   repo: string;
@@ -33,18 +45,13 @@ type CompletedScan = {
 };
 
 type CachedScan = {
-  expiresAt: number;
   payload: CompletedScan;
 };
 
-type RateLimitEntry = {
-  windowStart: number;
-  count: number;
+type ScanErrorPayload = {
+  message: string;
+  retryAfterSeconds?: number;
 };
-
-const scanCache = new Map<string, CachedScan>();
-const inFlightScans = new Map<string, Promise<CompletedScan>>();
-const rateLimitState = new Map<string, RateLimitEntry>();
 
 const SSE_HEADERS = {
   "Content-Type": "text/event-stream",
@@ -57,34 +64,24 @@ function buildCacheKey(
   repoLimit: number,
   branches: string[],
   baseBranches: string[],
+  repoFilter: RepoFilter,
 ): string {
   const normalizedBase =
     baseBranches.length > 0 ? baseBranches.join(",") : "__repo_default__";
-  return `${userKey}:${Number.isFinite(repoLimit) ? repoLimit : "all"}:${normalizedBase}:${branches.join(",")}`;
+  const normalizedRepos =
+    repoFilter.mode === "none"
+      ? "__all_repos__"
+      : repoFilter.values.join(",").toLowerCase();
+
+  return `${userKey}:${Number.isFinite(repoLimit) ? repoLimit : "all"}:${normalizedBase}:${branches.join(",")}:${normalizedRepos}`;
 }
 
-function cleanupExpiredCache(now: number) {
-  for (const [key, value] of scanCache.entries()) {
-    if (value.expiresAt <= now) {
-      scanCache.delete(key);
-    }
-  }
+function buildScanCacheStoreKey(cacheKey: string) {
+  return `scan:cache:${cacheKey}`;
 }
 
-function isRateLimited(userKey: string, now: number): boolean {
-  const entry = rateLimitState.get(userKey);
-
-  if (!entry || now - entry.windowStart >= RATE_LIMIT_WINDOW_MS) {
-    rateLimitState.set(userKey, { windowStart: now, count: 1 });
-    return false;
-  }
-
-  if (entry.count >= RATE_LIMIT_MAX_REQUESTS) {
-    return true;
-  }
-
-  entry.count += 1;
-  return false;
+function buildScanLockStoreKey(cacheKey: string) {
+  return `scan:lock:${cacheKey}`;
 }
 
 function createSseFromPayload(payload: CompletedScan): NextResponse {
@@ -121,13 +118,13 @@ function createSseFromPayload(payload: CompletedScan): NextResponse {
   return new NextResponse(stream, { headers: SSE_HEADERS });
 }
 
-function createSseError(message: string): NextResponse {
+function createSseError(payload: ScanErrorPayload): NextResponse {
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     start(controller) {
       controller.enqueue(
         encoder.encode(
-          `data: ${JSON.stringify({ type: "error", error: message })}\n\n`,
+          `data: ${JSON.stringify({ type: "error", error: payload.message, retryAfterSeconds: payload.retryAfterSeconds })}\n\n`,
         ),
       );
       controller.close();
@@ -137,16 +134,23 @@ function createSseError(message: string): NextResponse {
   return new NextResponse(stream, { headers: SSE_HEADERS });
 }
 
-function toErrorMessage(error: unknown): string {
+function toErrorPayload(error: unknown): ScanErrorPayload {
   if (error instanceof GitHubApiError) {
-    return error.message;
+    return {
+      message: error.message,
+      retryAfterSeconds: error.retryAfterSeconds ?? undefined,
+    };
   }
 
   if (error instanceof Error && error.message.trim().length > 0) {
-    return error.message;
+    return {
+      message: error.message,
+    };
   }
 
-  return "Scan failed";
+  return {
+    message: "Scan failed",
+  };
 }
 
 function parseCsvParam(value: string | null): string[] {
@@ -160,6 +164,57 @@ function parseCsvParam(value: string | null): string[] {
         .filter((item) => item.length > 0),
     ),
   );
+}
+
+function parseRepoFilter(value: string | null): RepoFilter {
+  const parsed = parseCsvParam(value);
+  if (parsed.length === 0) {
+    return { mode: "none", values: [] };
+  }
+
+  return {
+    mode: "subset",
+    values: parsed,
+  };
+}
+
+function validateBranchList(items: string[]): string | null {
+  for (const branch of items) {
+    if (!isValidBranchName(branch)) {
+      return `Invalid branch name: ${branch}`;
+    }
+  }
+
+  return null;
+}
+
+function validateRepoFilter(filter: RepoFilter): string | null {
+  if (filter.mode === "none") return null;
+
+  for (const token of filter.values) {
+    if (!isValidRepoFilterToken(token)) {
+      return `Invalid repo filter token: ${token}`;
+    }
+  }
+
+  return null;
+}
+
+async function waitForCachedScan(cacheStoreKey: string, timeoutMs: number) {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const cached = await getDistributedValue<CachedScan>(cacheStoreKey);
+    if (cached?.payload) {
+      return cached.payload;
+    }
+
+    await new Promise((resolve) => {
+      setTimeout(resolve, INFLIGHT_WAIT_POLL_MS);
+    });
+  }
+
+  return null;
 }
 
 function parsePositiveInt(
@@ -178,7 +233,9 @@ export async function GET(request: NextRequest) {
     // Read the access token from the encrypted JWT cookie (never sent to the client).
     const token = await getToken({ req: request });
     if (!token?.accessToken) {
-      return createSseError("Not authenticated. Please sign in to GitHub.");
+      return createSseError({
+        message: "Not authenticated. Please sign in to GitHub.",
+      });
     }
 
     const headers = {
@@ -187,77 +244,113 @@ export async function GET(request: NextRequest) {
     };
     const userKey = String(token.sub ?? token.email ?? "unknown-user");
 
+    const rateLimit = await consumeDistributedRateLimit(
+      `scan-user:${userKey}`,
+      RATE_LIMIT_MAX_REQUESTS,
+      RATE_LIMIT_WINDOW_MS,
+    );
+    if (rateLimit.limited) {
+      return createSseError({
+        message: "Rate limit reached. Please wait before scanning again.",
+        retryAfterSeconds: rateLimit.retryAfterSeconds,
+      });
+    }
+
     const limitParam = request.nextUrl.searchParams.get("limit");
-    const concurrencyParam = request.nextUrl.searchParams.get("concurrency");
     const branchesParam = request.nextUrl.searchParams.get("branches");
     const baseBranchParam = request.nextUrl.searchParams.get("baseBranch");
+    const reposParam = request.nextUrl.searchParams.get("repos");
+    const checkBranchParam = request.nextUrl.searchParams.get("checkBranch");
     const baseBranches = parseCsvParam(baseBranchParam);
     const parsedDevBranches = parseCsvParam(branchesParam);
     const devBranches =
       parsedDevBranches.length > 0 ? parsedDevBranches : ["dev", "develop"];
+    const repoFilter = parseRepoFilter(reposParam);
+
+    const branchValidationError = validateBranchList(devBranches);
+    if (branchValidationError) {
+      return createSseError({ message: branchValidationError });
+    }
+
+    const baseBranchValidationError = validateBranchList(baseBranches);
+    if (baseBranchValidationError) {
+      return createSseError({ message: baseBranchValidationError });
+    }
+
+    const repoValidationError = validateRepoFilter(repoFilter);
+    if (repoValidationError) {
+      return createSseError({ message: repoValidationError });
+    }
 
     if (branchesParam && parsedDevBranches.length === 0) {
-      return createSseError(
-        "No valid compare branches were provided. Use comma-separated branch names.",
-      );
+      return createSseError({
+        message:
+          "No valid compare branches were provided. Use comma-separated branch names.",
+      });
     }
 
     const repoLimit =
       limitParam === "all"
         ? Number.POSITIVE_INFINITY
         : parsePositiveInt(limitParam, DEFAULT_REPO_LIMIT, MAX_REPO_LIMIT);
-    const concurrency = parsePositiveInt(
-      concurrencyParam,
-      DEFAULT_CONCURRENCY,
-      MAX_CONCURRENCY,
-    );
+    const concurrency = DEFAULT_CONCURRENCY;
+    const checkBranchExistsBeforeCompare = checkBranchParam !== "0";
 
-    const now = Date.now();
     const cacheKey = buildCacheKey(
       userKey,
       repoLimit,
       devBranches,
       baseBranches,
+      repoFilter,
     );
-    cleanupExpiredCache(now);
+    const cacheStoreKey = buildScanCacheStoreKey(cacheKey);
+    const lockStoreKey = buildScanLockStoreKey(cacheKey);
+    const lockOwner = `${userKey}:${crypto.randomUUID()}`;
 
-    const cached = scanCache.get(cacheKey);
-    if (cached && cached.expiresAt > now) {
+    const cached = await getDistributedValue<CachedScan>(cacheStoreKey);
+    if (cached?.payload) {
       return createSseFromPayload(cached.payload);
     }
-    const inFlight = inFlightScans.get(cacheKey);
-    if (inFlight) {
-      try {
-        const payload = await inFlight;
-        return createSseFromPayload(payload);
-      } catch (error) {
-        return createSseError(toErrorMessage(error));
-      }
-    }
 
-    if (isRateLimited(userKey, now)) {
-      return createSseError(
-        "Rate limit reached. Please wait about a minute before scanning again.",
+    const lockAcquired = await tryAcquireDistributedLock(
+      lockStoreKey,
+      lockOwner,
+      INFLIGHT_LOCK_TTL_MS,
+    );
+    if (!lockAcquired) {
+      const payload = await waitForCachedScan(
+        cacheStoreKey,
+        INFLIGHT_WAIT_TIMEOUT_MS,
       );
+
+      if (payload) {
+        return createSseFromPayload(payload);
+      }
+
+      return createSseError({
+        message:
+          "A matching scan is already running. Please retry in a few seconds.",
+      });
     }
 
-    const repos = await fetchAllRepos(headers, repoLimit);
+    const repos = await resolveReposForScan(headers, repoLimit, repoFilter);
     const results: ScanItem[] = [];
-
-    let resolveInFlight: ((payload: CompletedScan) => void) | null = null;
-    let rejectInFlight: ((error: unknown) => void) | null = null;
-
-    const inFlightPromise = new Promise<CompletedScan>((resolve, reject) => {
-      resolveInFlight = resolve;
-      rejectInFlight = reject;
-    });
-    inFlightScans.set(cacheKey, inFlightPromise);
 
     // Create a transform stream to send progress updates
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
       async start(controller) {
         try {
+          logger.info({
+            event: "scan_start",
+            userKey,
+            repoLimit,
+            repoFilter: repoFilter.values,
+            baseBranches,
+            devBranches,
+            totalRepos: repos.length,
+          });
+
           controller.enqueue(
             encoder.encode(
               `data: ${JSON.stringify({ type: "start", total: repos.length })}\n\n`,
@@ -284,6 +377,7 @@ export async function GET(request: NextRequest) {
                   headers,
                   devBranches,
                   baseBranches,
+                  { checkBranchExistsBeforeCompare },
                 );
 
                 if (repoResults.length > 0) {
@@ -321,12 +415,21 @@ export async function GET(request: NextRequest) {
             results,
           };
 
-          scanCache.set(cacheKey, {
-            expiresAt: Date.now() + SCAN_CACHE_TTL_MS,
-            payload,
+          await setDistributedValue(
+            cacheStoreKey,
+            {
+              payload,
+            } satisfies CachedScan,
+            SCAN_CACHE_TTL_MS,
+          );
+          await releaseDistributedLock(lockStoreKey, lockOwner);
+
+          logger.info({
+            event: "scan_complete",
+            userKey,
+            totalRepos: repos.length,
+            resultCount: payload.results.length,
           });
-          resolveInFlight?.(payload);
-          inFlightScans.delete(cacheKey);
 
           if (repos.length === 0) {
             controller.enqueue(
@@ -352,12 +455,22 @@ export async function GET(request: NextRequest) {
           );
           controller.close();
         } catch (error) {
-          const message = toErrorMessage(error);
-          rejectInFlight?.(error);
-          inFlightScans.delete(cacheKey);
+          const payload = toErrorPayload(error);
+          await releaseDistributedLock(lockStoreKey, lockOwner);
+
+          logger.error({
+            event: "scan_error",
+            userKey,
+            repoFilter: repoFilter.values,
+            baseBranches,
+            devBranches,
+            retryAfterSeconds: payload.retryAfterSeconds,
+            message: payload.message,
+          });
+
           controller.enqueue(
             encoder.encode(
-              `data: ${JSON.stringify({ type: "error", error: message })}\n\n`,
+              `data: ${JSON.stringify({ type: "error", error: payload.message, retryAfterSeconds: payload.retryAfterSeconds })}\n\n`,
             ),
           );
           controller.close();
@@ -367,6 +480,7 @@ export async function GET(request: NextRequest) {
 
     return new NextResponse(stream, { headers: SSE_HEADERS });
   } catch (error) {
-    return createSseError(toErrorMessage(error));
+    const payload = toErrorPayload(error);
+    return createSseError(payload);
   }
 }

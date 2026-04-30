@@ -26,6 +26,8 @@ At a glance, it gives a practical status view for branch drift across repositori
 - Repository scan using your GitHub account access
 - Configurable branch comparison — enter any branch name(s) to compare against the default branch (defaults to `dev, develop`)
 - Quick visibility into where development is ahead
+- GitHub token stored exclusively in an encrypted, httpOnly cookie; never written to Redis or any external store
+- Scan results cached in Redis for up to 10 minutes to avoid redundant GitHub API calls, then discarded automatically
 
 ## How To Set It Up Yourself (if you want to run it locally)
 
@@ -58,6 +60,18 @@ GITHUB_ID=your-client-id
 GITHUB_SECRET=your-client-secret
 ```
 
+Redis is **optional**. Without it the app uses in-memory storage for caching, deduplication locks, and rate limiting. All state is lost on server restart, which is fine for single-instance or local use.
+
+To enable Redis, add your Upstash credentials:
+
+```env
+KV_REST_API_URL=https://your-instance.upstash.io
+KV_REST_API_TOKEN=your-token
+REDIS_KEY_PREFIX=github-branch-comparator
+```
+
+Redis stores short-lived data only: deduplication locks (≤ 90 s), rate-limit counters (≤ 60 s), scan result cache including repo names, branch names, and commit subjects (≤ 2 min), and per-repository comparison cache (≤ 10 min). Your GitHub token is never written to Redis. If you share one Redis database across multiple sites, give each its own `REDIS_KEY_PREFIX`.
+
 Generate `NEXTAUTH_SECRET` with one of these commands:
 
 ```bash
@@ -83,7 +97,13 @@ Open http://localhost:3000 and sign in with GitHub.
 The app requests:
 
 - `read:user`
+- `public_repo` (default)
+
+Optional when scanning private repositories:
+
 - `repo`
+
+You can override the OAuth scope by setting `GITHUB_OAUTH_SCOPE`.
 
 These are used to read repository and branch information needed for comparisons.
 

@@ -1,17 +1,17 @@
 import { AuthButton } from "@/components/auth-button";
 import { Dashboard } from "@/components/dashboard";
 import { ThemeToggle } from "@/components/theme-toggle";
-import { authOptions } from "@/lib/auth";
+import { auth } from "@/lib/auth";
 import {
   GitBranch,
   GitCommitHorizontal,
   GitMerge,
   ShieldCheck,
 } from "lucide-react";
-import { getServerSession } from "next-auth";
+import Link from "next/link";
 
 export default async function Page() {
-  const session = await getServerSession(authOptions);
+  const session = await auth();
 
   return (
     <div className="flex min-h-screen flex-col">
@@ -25,6 +25,12 @@ export default async function Page() {
             </span>
           </div>
           <div className="flex items-center gap-2">
+            <Link
+              href="/privacy"
+              className="text-xs text-muted-foreground underline underline-offset-4"
+            >
+              Privacy
+            </Link>
             <ThemeToggle />
             <AuthButton />
           </div>
@@ -73,13 +79,41 @@ export default async function Page() {
                 <article className="rounded-xl border bg-card p-5 text-left">
                   <ShieldCheck className="h-5 w-5 text-primary" />
                   <h2 className="mt-3 font-semibold tracking-tight">
-                    Sign in safely
+                    Your data stays yours
                   </h2>
                   <p className="mt-2 text-sm text-muted-foreground">
-                    Uses GitHub OAuth through NextAuth, with access limited to
-                    only what the scan requires.
+                    Scan results are cached briefly (up to 10 minutes) to avoid
+                    redundant GitHub requests, then discarded automatically.
+                    Your token is never persisted beyond your session cookie.
                   </p>
                 </article>
+              </div>
+
+              <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 text-left">
+                <h2 className="font-semibold tracking-tight">
+                  Before you sign in
+                </h2>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  We request minimal GitHub scope by default (
+                  <span className="font-medium">read:user public_repo</span>).
+                  Private-repo scans require broader scope (
+                  <span className="font-medium">read:user repo</span>). Your
+                  token is kept only in an encrypted httpOnly cookie — never
+                  exposed to JavaScript or written to any database.
+                </p>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  Scan results are cached briefly (up to 10 minutes) to avoid
+                  redundant GitHub requests, then discarded automatically. Your
+                  token is never persisted beyond your session cookie. Read the
+                  full details in our{" "}
+                  <Link
+                    href="/privacy"
+                    className="underline underline-offset-2"
+                  >
+                    privacy notice
+                  </Link>
+                  .
+                </p>
               </div>
 
               <div className="rounded-2xl border bg-muted/40 p-5 sm:p-7">

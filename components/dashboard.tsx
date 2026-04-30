@@ -24,6 +24,8 @@ export function Dashboard() {
     setMinAheadBy,
     scanLimit,
     setScanLimit,
+    reposInput,
+    setReposInput,
     baseBranchInput,
     setBaseBranchInput,
     branchesInput,
@@ -51,6 +53,22 @@ export function Dashboard() {
           </p>
         </div>
         <div className="flex w-full sm:w-auto flex-col sm:flex-row items-stretch sm:items-center gap-2">
+          <div className="space-y-1">
+            <label
+              htmlFor="repos-input"
+              className="text-xs text-muted-foreground"
+            >
+              Repos/org filter
+            </label>
+            <input
+              id="repos-input"
+              value={reposInput}
+              onChange={(event) => setReposInput(event.target.value)}
+              placeholder="e.g. org/repo-a, org/repo-b or org-name"
+              disabled={isScanning}
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm outline-none transition focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40 disabled:opacity-50"
+            />
+          </div>
           <div className="space-y-1">
             <label
               htmlFor="base-branch-input"
@@ -253,11 +271,22 @@ export function Dashboard() {
             {results.length > 0 && (
               <div className="text-sm text-muted-foreground">
                 Found <span className="font-medium">{results.length}</span>{" "}
-                repo(s) with pending commits
+                repo(s) with pending commits so far
               </div>
             )}
           </div>
-          <ScanSkeletons />
+          {results.length > 0 && (
+            <div className="grid gap-4 grid-cols-1 min-[900px]:grid-cols-2 2xl:grid-cols-3">
+              {filteredResults.map((result) => (
+                <RepoCard
+                  key={`${result.repo}-${result.baseBranch}-${result.devBranch}`}
+                  result={result}
+                  commitSortOrder={commitSortOrder}
+                />
+              ))}
+            </div>
+          )}
+          {results.length === 0 && <ScanSkeletons />}
         </div>
       )}
 

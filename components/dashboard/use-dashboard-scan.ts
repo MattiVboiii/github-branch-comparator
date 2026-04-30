@@ -33,6 +33,7 @@ type ScanCompleteEvent = {
 type ScanErrorEvent = {
   type: "error";
   error: string;
+  retryAfterSeconds?: number;
 };
 
 type ScanServerEvent =
@@ -101,10 +102,38 @@ function parseScanServerEvent(raw: unknown): ScanServerEvent | null {
       return { type: "complete", results: raw.results };
     case "error":
       if (typeof raw.error !== "string") return null;
-      return { type: "error", error: raw.error };
+      return {
+        type: "error",
+        error: raw.error,
+        retryAfterSeconds:
+          typeof raw.retryAfterSeconds === "number"
+            ? raw.retryAfterSeconds
+            : undefined,
+      };
     default:
       return null;
   }
+}
+
+function toResultKey(item: ScanResult): string {
+  return `${item.repo}|${item.baseBranch}|${item.devBranch}`;
+}
+
+function mergeUniqueResults(
+  current: ScanResult[],
+  incoming: ScanResult[],
+): ScanResult[] {
+  if (incoming.length === 0) return current;
+
+  const map = new Map<string, ScanResult>();
+  for (const result of current) {
+    map.set(toResultKey(result), result);
+  }
+  for (const result of incoming) {
+    map.set(toResultKey(result), result);
+  }
+
+  return Array.from(map.values());
 }
 
 export function useDashboardScan() {
@@ -117,6 +146,7 @@ export function useDashboardScan() {
   const [branchFilter, setBranchFilter] = useState<string>("all");
   const [minAheadBy, setMinAheadBy] = useState(0);
   const [scanLimit, setScanLimit] = useState<ScanLimit>(100);
+  const [reposInput, setReposInput] = useState("");
   const [baseBranchInput, setBaseBranchInput] = useState("main, master");
   const [branchesInput, setBranchesInput] = useState("dev, develop");
   const [repoSortOrder, setRepoSortOrder] =
@@ -172,6 +202,11 @@ export function useDashboardScan() {
 
     const params = new URLSearchParams();
     params.set("limit", scanLimit.toString());
+    const repos = reposInput.trim();
+    if (repos.length > 0) {
+      params.set("repos", repos);
+    }
+
     const baseBranch = baseBranchInput.trim();
     if (baseBranch.length > 0) {
       params.set("baseBranch", baseBranch);
@@ -204,18 +239,24 @@ export function useDashboardScan() {
           case "progress":
             setScanned(data.scanned);
             if (data.results.length > 0) {
-              setResults((prev) => [...prev, ...data.results]);
+              setResults((prev) => mergeUniqueResults(prev, data.results));
             }
             break;
 
           case "complete":
-            setResults(data.results);
+            setResults((prev) => mergeUniqueResults(prev, data.results));
             setIsScanning(false);
             closeCurrentEventSource();
             break;
 
           case "error":
-            setError(data.error);
+            if (typeof data.retryAfterSeconds === "number") {
+              setError(
+                `${data.error} Retry in about ${data.retryAfterSeconds} second(s).`,
+              );
+            } else {
+              setError(data.error);
+            }
             setIsScanning(false);
             closeCurrentEventSource();
             break;
@@ -264,6 +305,8 @@ export function useDashboardScan() {
     setMinAheadBy,
     scanLimit,
     setScanLimit,
+    reposInput,
+    setReposInput,
     baseBranchInput,
     setBaseBranchInput,
     branchesInput,
