@@ -1,3 +1,4 @@
+import { authConfig } from "@/lib/auth";
 import {
   consumeDistributedRateLimit,
   getDistributedValue,
@@ -231,7 +232,11 @@ function parsePositiveInt(
 export async function GET(request: NextRequest) {
   try {
     // Read the access token from the encrypted JWT cookie (never sent to the client).
-    const token = await getToken({ req: request });
+    const token = await getToken({
+      req: request,
+      secret: authConfig.secret,
+      cookieName: authConfig.cookies.sessionToken.name,
+    });
     if (!token?.accessToken) {
       return createSseError({
         message: "Not authenticated. Please sign in to GitHub.",
