@@ -1,7 +1,16 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { enhanceScanErrorMessage } from "@/lib/dashboard/error-messages";
+import {
+  loadScanPreferences,
+  readScanParamsFromUrl,
+  saveScanPreferences,
+  syncScanParamsToUrl,
+  type ScanPreferences,
+} from "@/lib/dashboard/preferences";
+import { parseScanServerEvent } from "@/lib/dashboard/scan-events";
 import type {
   CommitSortOrder,
   RepoSortOrder,
@@ -13,107 +22,14 @@ import {
   parseBranchesInput,
 } from "@/lib/dashboard/utils";
 
-type ScanStartEvent = {
-  type: "start";
-  total: number;
+export type ScanSummary = {
+  reposScanned: number;
+  reposWithDrift: number;
+  durationMs: number;
+  fromCache: boolean;
 };
 
-type ScanProgressEvent = {
-  type: "progress";
-  scanned: number;
-  total: number;
-  results: ScanResult[];
-};
-
-type ScanCompleteEvent = {
-  type: "complete";
-  results: ScanResult[];
-};
-
-type ScanErrorEvent = {
-  type: "error";
-  error: string;
-  retryAfterSeconds?: number;
-};
-
-type ScanServerEvent =
-  | ScanStartEvent
-  | ScanProgressEvent
-  | ScanCompleteEvent
-  | ScanErrorEvent;
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object";
-}
-
-function isCommit(value: unknown): value is ScanResult["commits"][number] {
-  if (!isObject(value)) return false;
-
-  return (
-    typeof value.sha === "string" &&
-    typeof value.fullSha === "string" &&
-    typeof value.message === "string" &&
-    (typeof value.committedAt === "string" || value.committedAt === null)
-  );
-}
-
-function isScanResult(value: unknown): value is ScanResult {
-  if (!isObject(value)) return false;
-
-  return (
-    typeof value.repo === "string" &&
-    typeof value.baseBranch === "string" &&
-    typeof value.devBranch === "string" &&
-    typeof value.aheadBy === "number" &&
-    Array.isArray(value.commits) &&
-    value.commits.every((commit) => isCommit(commit))
-  );
-}
-
-function parseScanServerEvent(raw: unknown): ScanServerEvent | null {
-  if (!isObject(raw) || typeof raw.type !== "string") return null;
-
-  switch (raw.type) {
-    case "start":
-      if (typeof raw.total !== "number") return null;
-      return { type: "start", total: raw.total };
-    case "progress":
-      if (
-        typeof raw.scanned !== "number" ||
-        typeof raw.total !== "number" ||
-        !Array.isArray(raw.results) ||
-        !raw.results.every((item) => isScanResult(item))
-      ) {
-        return null;
-      }
-      return {
-        type: "progress",
-        scanned: raw.scanned,
-        total: raw.total,
-        results: raw.results,
-      };
-    case "complete":
-      if (
-        !Array.isArray(raw.results) ||
-        !raw.results.every((r) => isScanResult(r))
-      ) {
-        return null;
-      }
-      return { type: "complete", results: raw.results };
-    case "error":
-      if (typeof raw.error !== "string") return null;
-      return {
-        type: "error",
-        error: raw.error,
-        retryAfterSeconds:
-          typeof raw.retryAfterSeconds === "number"
-            ? raw.retryAfterSeconds
-            : undefined,
-      };
-    default:
-      return null;
-  }
-}
+const MAX_SSE_RETRIES = 1;
 
 function toResultKey(item: ScanResult): string {
   return `${item.repo}|${item.baseBranch}|${item.devBranch}`;
@@ -137,8 +53,12 @@ function mergeUniqueResults(
 }
 
 export function useDashboardScan() {
+  const [prefsLoaded, setPrefsLoaded] = useState(false);
   const [results, setResults] = useState<ScanResult[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [retryAfterSeconds, setRetryAfterSeconds] = useState<number | null>(
+    null,
+  );
   const [isScanning, setIsScanning] = useState(false);
   const [scanned, setScanned] = useState(0);
   const [total, setTotal] = useState(0);
@@ -153,9 +73,16 @@ export function useDashboardScan() {
     useState<RepoSortOrder>("latest-first");
   const [commitSortOrder, setCommitSortOrder] =
     useState<CommitSortOrder>("newest-first");
+  const [scanSummary, setScanSummary] = useState<ScanSummary | null>(null);
+  const [cacheNotice, setCacheNotice] = useState<string | null>(null);
+  const [liveMessage, setLiveMessage] = useState("");
 
   const eventSourceRef = useRef<EventSource | null>(null);
   const isScanActiveRef = useRef(false);
+  const scanStartedAtRef = useRef<number | null>(null);
+  const totalReposRef = useRef(0);
+  const retryCountRef = useRef(0);
+  const startScanRef = useRef<(isRetry?: boolean) => void>(() => {});
 
   const maxAheadBy = useMemo(
     () => Math.max(1, ...results.map((result) => result.aheadBy)),
@@ -179,6 +106,51 @@ export function useDashboardScan() {
     [results, searchQuery, branchFilter, minAheadBy, repoSortOrder],
   );
 
+  const currentPrefs = useMemo<ScanPreferences>(
+    () => ({
+      reposInput,
+      baseBranchInput,
+      branchesInput,
+      scanLimit,
+    }),
+    [reposInput, baseBranchInput, branchesInput, scanLimit],
+  );
+
+  useEffect(() => {
+    const fromStorage = loadScanPreferences();
+    const fromUrl = readScanParamsFromUrl(
+      new URLSearchParams(window.location.search),
+    );
+
+    const merged: ScanPreferences = { ...fromStorage, ...fromUrl };
+    // Hydrate form state from localStorage and shareable URL params once on mount.
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- client-only preference restore
+    setReposInput(merged.reposInput);
+    setBaseBranchInput(merged.baseBranchInput);
+    setBranchesInput(merged.branchesInput);
+    setScanLimit(merged.scanLimit);
+    setPrefsLoaded(true);
+  }, []);
+
+  useEffect(() => {
+    if (!prefsLoaded) return;
+    saveScanPreferences(currentPrefs);
+    syncScanParamsToUrl(currentPrefs);
+  }, [currentPrefs, prefsLoaded]);
+
+  useEffect(() => {
+    if (retryAfterSeconds === null || retryAfterSeconds <= 0) return;
+
+    const timer = window.setInterval(() => {
+      setRetryAfterSeconds((value) => {
+        if (value === null || value <= 1) return null;
+        return value - 1;
+      });
+    }, 1000);
+
+    return () => window.clearInterval(timer);
+  }, [retryAfterSeconds]);
+
   function closeCurrentEventSource() {
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
@@ -188,95 +160,156 @@ export function useDashboardScan() {
     isScanActiveRef.current = false;
   }
 
-  function handleScan() {
-    setError(null);
-    setResults([]);
-    setScanned(0);
-    setTotal(0);
-    setIsScanning(true);
-    setBranchFilter("all");
-    isScanActiveRef.current = true;
-
+  const cancelScan = useCallback(() => {
     closeCurrentEventSource();
-    isScanActiveRef.current = true;
+    setIsScanning(false);
+    setLiveMessage("Scan cancelled.");
+  }, []);
 
-    const params = new URLSearchParams();
-    params.set("limit", scanLimit.toString());
-    const repos = reposInput.trim();
-    if (repos.length > 0) {
-      params.set("repos", repos);
-    }
+  const startScan = useCallback(
+    (isRetry = false) => {
+      if (!isRetry) {
+        retryCountRef.current = 0;
+      }
 
-    const baseBranch = baseBranchInput.trim();
-    if (baseBranch.length > 0) {
-      params.set("baseBranch", baseBranch);
-    }
+      setError(null);
+      setRetryAfterSeconds(null);
+      setCacheNotice(null);
+      setResults([]);
+      setScanned(0);
+      setTotal(0);
+      setScanSummary(null);
+      setIsScanning(true);
+      setBranchFilter("all");
+      isScanActiveRef.current = true;
+      scanStartedAtRef.current = Date.now();
 
-    if (branchOptions.length > 0) {
-      params.set("branches", branchOptions.join(","));
-    }
+      closeCurrentEventSource();
+      isScanActiveRef.current = true;
 
-    const eventSource = new EventSource(`/api/scan?${params.toString()}`);
-    eventSourceRef.current = eventSource;
+      const params = new URLSearchParams();
+      params.set("limit", scanLimit.toString());
+      const repos = reposInput.trim();
+      if (repos.length > 0) {
+        params.set("repos", repos);
+      }
 
-    eventSource.addEventListener("message", (event) => {
-      try {
-        const raw = JSON.parse(event.data) as unknown;
-        const data = parseScanServerEvent(raw);
+      const baseBranch = baseBranchInput.trim();
+      if (baseBranch.length > 0) {
+        params.set("baseBranch", baseBranch);
+      }
 
-        if (!data) {
-          setError("Received an invalid response from the scan API.");
+      if (branchOptions.length > 0) {
+        params.set("branches", branchOptions.join(","));
+      }
+
+      const eventSource = new EventSource(`/api/scan?${params.toString()}`);
+      eventSourceRef.current = eventSource;
+
+      eventSource.addEventListener("message", (event) => {
+        try {
+          const raw = JSON.parse(event.data) as unknown;
+          const data = parseScanServerEvent(raw);
+
+          if (!data) {
+            setError("Received an invalid response from the scan API.");
+            setIsScanning(false);
+            closeCurrentEventSource();
+            return;
+          }
+
+          switch (data.type) {
+            case "cached":
+              setCacheNotice(
+                `Showing cached results (refreshes in about ${data.expiresInSeconds}s).`,
+              );
+              break;
+
+            case "start":
+              totalReposRef.current = data.total;
+              setTotal(data.total);
+              setLiveMessage(
+                `Scan started. ${data.total} repositories to check.`,
+              );
+              break;
+
+            case "progress":
+              setScanned(data.scanned);
+              if (data.results.length > 0) {
+                setResults((prev) => mergeUniqueResults(prev, data.results));
+              }
+              setLiveMessage(
+                `Scanning: ${data.scanned} of ${data.total} repositories checked.`,
+              );
+              break;
+
+            case "complete": {
+              const merged = mergeUniqueResults([], data.results);
+              setResults(merged);
+              setIsScanning(false);
+              const startedAt = scanStartedAtRef.current ?? Date.now();
+              setScanSummary({
+                reposScanned: totalReposRef.current,
+                reposWithDrift: merged.length,
+                durationMs: Date.now() - startedAt,
+                fromCache: data.fromCache === true,
+              });
+              setLiveMessage(
+                `Scan complete. Found ${merged.length} repositories with pending commits.`,
+              );
+              closeCurrentEventSource();
+              break;
+            }
+
+            case "error": {
+              const enhanced = enhanceScanErrorMessage(data.error);
+              setError(enhanced);
+              if (typeof data.retryAfterSeconds === "number") {
+                setRetryAfterSeconds(data.retryAfterSeconds);
+              }
+              setIsScanning(false);
+              closeCurrentEventSource();
+              break;
+            }
+          }
+        } catch {
+          setError("Failed to parse scan response.");
           setIsScanning(false);
           closeCurrentEventSource();
+        }
+      });
+
+      eventSource.addEventListener("error", () => {
+        if (!isScanActiveRef.current) {
           return;
         }
 
-        switch (data.type) {
-          case "start":
-            setTotal(data.total);
-            break;
-
-          case "progress":
-            setScanned(data.scanned);
-            if (data.results.length > 0) {
-              setResults((prev) => mergeUniqueResults(prev, data.results));
-            }
-            break;
-
-          case "complete":
-            setResults((prev) => mergeUniqueResults(prev, data.results));
-            setIsScanning(false);
-            closeCurrentEventSource();
-            break;
-
-          case "error":
-            if (typeof data.retryAfterSeconds === "number") {
-              setError(
-                `${data.error} Retry in about ${data.retryAfterSeconds} second(s).`,
-              );
-            } else {
-              setError(data.error);
-            }
-            setIsScanning(false);
-            closeCurrentEventSource();
-            break;
-        }
-      } catch {
-        setError("Failed to parse scan response.");
-        setIsScanning(false);
         closeCurrentEventSource();
-      }
-    });
 
-    eventSource.addEventListener("error", () => {
-      if (!isScanActiveRef.current) {
-        return;
-      }
+        if (retryCountRef.current < MAX_SSE_RETRIES) {
+          retryCountRef.current += 1;
+          setLiveMessage("Connection lost. Retrying scan once…");
+          window.setTimeout(() => startScanRef.current(true), 800);
+          return;
+        }
 
-      setError("Connection lost during scan");
-      setIsScanning(false);
-      closeCurrentEventSource();
-    });
+        setError(
+          enhanceScanErrorMessage(
+            "Connection lost during scan. Check your network and try again.",
+          ),
+        );
+        setIsScanning(false);
+      });
+    },
+    [baseBranchInput, branchOptions, reposInput, scanLimit],
+  );
+
+  useEffect(() => {
+    startScanRef.current = startScan;
+  }, [startScan]);
+
+  function handleScan() {
+    startScan(false);
   }
 
   function clearFilters() {
@@ -294,6 +327,7 @@ export function useDashboardScan() {
   return {
     results,
     error,
+    retryAfterSeconds,
     isScanning,
     scanned,
     total,
@@ -319,6 +353,10 @@ export function useDashboardScan() {
     branchOptions,
     filteredResults,
     handleScan,
+    cancelScan,
     clearFilters,
+    scanSummary,
+    cacheNotice,
+    liveMessage,
   };
 }

@@ -1,6 +1,5 @@
-import { AuthButton } from "@/components/auth-button";
 import { Dashboard } from "@/components/dashboard";
-import { ThemeToggle } from "@/components/theme-toggle";
+import { SiteShell } from "@/components/site-shell";
 import { auth } from "@/lib/auth";
 import {
   GitBranch,
@@ -14,77 +13,66 @@ export default async function Page() {
   const session = await auth();
 
   return (
-    <div className="flex min-h-screen flex-col">
-      {/* Header */}
-      <header className="sticky top-0 z-10 border-b bg-background/80 backdrop-blur supports-backdrop-filter:bg-background/60">
-        <div className="mx-auto flex h-14 w-full max-w-screen-2xl items-center justify-between px-3 sm:px-4 lg:px-5">
-          <div className="flex items-center gap-2">
-            <GitBranch className="h-5 w-5 text-primary" />
-            <span className="font-semibold tracking-tight text-sm sm:text-base">
-              Branch Comparator
-            </span>
-          </div>
-          <div className="flex items-center gap-2">
-            <Link
-              href="/privacy"
-              className="text-xs text-muted-foreground underline underline-offset-4"
-            >
-              Privacy
-            </Link>
-            <ThemeToggle />
-            <AuthButton />
-          </div>
-        </div>
-      </header>
-
-      {/* Main */}
+    <SiteShell>
       <main className="mx-auto w-full max-w-screen-2xl flex-1 px-3 py-6 sm:px-4 sm:py-8 lg:px-5">
         {!session ? (
           <section className="py-4 sm:py-10">
             <div className="mx-auto max-w-5xl space-y-10 sm:space-y-14">
               <div className="flex flex-col items-center text-center">
-                <GitBranch className="mb-6 h-12 w-12 sm:h-14 sm:w-14 text-muted-foreground" />
+                <GitBranch
+                  className="mb-6 h-12 w-12 sm:h-14 sm:w-14 text-muted-foreground"
+                  aria-hidden
+                />
                 <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">
                   GitHub Branch Comparator
                 </h1>
                 <p className="mt-3 max-w-md text-sm sm:text-base text-muted-foreground">
                   Sign in with GitHub to scan your repositories for unmerged
-                  commits on (for example) dev branches.
+                  commits on dev, develop, staging, or any branch you name.
                 </p>
               </div>
 
               <div className="grid gap-4 sm:grid-cols-3">
                 <article className="rounded-xl border bg-card p-5 text-left">
-                  <GitMerge className="h-5 w-5 text-primary" />
+                  <GitMerge className="h-5 w-5 text-primary" aria-hidden />
                   <h2 className="mt-3 font-semibold tracking-tight">
                     Catch missed merges
                   </h2>
                   <p className="mt-2 text-sm text-muted-foreground">
-                    Find repos where your release branches are still behind dev
-                    so nothing important is left out.
+                    Find repos where your release branch is behind development
+                    so nothing important is left out before a cut.
                   </p>
                 </article>
 
                 <article className="rounded-xl border bg-card p-5 text-left">
-                  <GitCommitHorizontal className="h-5 w-5 text-primary" />
+                  <GitCommitHorizontal
+                    className="h-5 w-5 text-primary"
+                    aria-hidden
+                  />
                   <h2 className="mt-3 font-semibold tracking-tight">
                     Review commit context
                   </h2>
                   <p className="mt-2 text-sm text-muted-foreground">
-                    See commit subjects quickly so you can decide whether to
-                    cherry-pick, merge, or ignore.
+                    See commit subjects quickly, open compares on GitHub, or
+                    copy a list for standups.
                   </p>
                 </article>
 
                 <article className="rounded-xl border bg-card p-5 text-left">
-                  <ShieldCheck className="h-5 w-5 text-primary" />
+                  <ShieldCheck className="h-5 w-5 text-primary" aria-hidden />
                   <h2 className="mt-3 font-semibold tracking-tight">
                     Your data stays yours
                   </h2>
                   <p className="mt-2 text-sm text-muted-foreground">
-                    Scan results are cached briefly (up to 10 minutes) to avoid
-                    redundant GitHub requests, then discarded automatically.
-                    Your token is never persisted beyond your session cookie.
+                    Your token stays in an encrypted session cookie. Short-lived
+                    scan caches are discarded automatically — see our{" "}
+                    <Link
+                      href="/privacy"
+                      className="underline underline-offset-2"
+                    >
+                      privacy notice
+                    </Link>
+                    .
                   </p>
                 </article>
               </div>
@@ -94,23 +82,16 @@ export default async function Page() {
                   Before you sign in
                 </h2>
                 <p className="mt-2 text-sm text-muted-foreground">
-                  We request minimal GitHub scope by default (
-                  <span className="font-medium">read:user public_repo</span>).
-                  Private-repo scans require broader scope (
-                  <span className="font-medium">read:user repo</span>). Your
-                  token is kept only in an encrypted httpOnly cookie — never
-                  exposed to JavaScript or written to any database.
+                  Default scope is{" "}
+                  <span className="font-medium">read:user public_repo</span>.
+                  Choose <span className="font-medium">read:user repo</span>{" "}
+                  when you need private repositories. Tokens are never exposed
+                  to browser JavaScript or stored in a database.
                 </p>
                 <p className="mt-2 text-sm text-muted-foreground">
-                  Scan results are cached briefly (up to 10 minutes) to avoid
-                  redundant GitHub requests, then discarded automatically. Your
-                  token is never persisted beyond your session cookie. Read the
-                  full details in our{" "}
-                  <Link
-                    href="/privacy"
-                    className="underline underline-offset-2"
-                  >
-                    privacy notice
+                  Questions? See the{" "}
+                  <Link href="/faq" className="underline underline-offset-2">
+                    FAQ
                   </Link>
                   .
                 </p>
@@ -127,8 +108,8 @@ export default async function Page() {
                     </p>
                     <p className="mt-1 text-sm font-medium">Connect GitHub</p>
                     <p className="mt-1 text-sm text-muted-foreground">
-                      Authenticate once to allow repository listing and branch
-                      comparison.
+                      Authenticate once to list repositories and compare
+                      branches.
                     </p>
                   </div>
                   <div>
@@ -139,8 +120,7 @@ export default async function Page() {
                       Pick your branch names
                     </p>
                     <p className="mt-1 text-sm text-muted-foreground">
-                      Scan one or more branch candidates like dev, develop, or
-                      staging.
+                      Scan dev, develop, staging, or any comma-separated list.
                     </p>
                   </div>
                   <div>
@@ -151,8 +131,7 @@ export default async function Page() {
                       Triage pending commits
                     </p>
                     <p className="mt-1 text-sm text-muted-foreground">
-                      Filter by repo, branch, and ahead count to prioritize what
-                      needs action.
+                      Filter, export, and open compares or PRs on GitHub.
                     </p>
                   </div>
                 </div>
@@ -163,6 +142,6 @@ export default async function Page() {
           <Dashboard />
         )}
       </main>
-    </div>
+    </SiteShell>
   );
 }

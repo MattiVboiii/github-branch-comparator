@@ -3,7 +3,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 
 export function ScanSkeletons() {
   return (
-    <div className="grid gap-4 grid-cols-1 min-[900px]:grid-cols-2 2xl:grid-cols-3">
+    <div className="grid gap-4 grid-cols-1 min-[900px]:grid-cols-2 2xl:grid-cols-3 motion-reduce:animate-none">
       {Array.from({ length: 6 }).map((_, i) => (
         <Card
           key={i}

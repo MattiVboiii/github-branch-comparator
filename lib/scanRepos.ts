@@ -84,6 +84,12 @@ function normalizeRepo(raw: unknown): GitHubRepo | null {
     return null;
   }
 
+  const archived = (raw as { archived?: unknown }).archived;
+  const fork = (raw as { fork?: unknown }).fork;
+  if (archived === true || fork === true) {
+    return null;
+  }
+
   return {
     full_name: fullName,
     default_branch: defaultBranch,

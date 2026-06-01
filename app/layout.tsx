@@ -1,4 +1,5 @@
 import { Providers } from "@/components/providers";
+import { getMetadataBase, siteConfig } from "@/lib/site";
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
@@ -13,9 +14,32 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+const metadataBase = getMetadataBase();
+
 export const metadata: Metadata = {
-  title: "GitHub Branch Comparator",
-  description: "See which repos have unmerged commits on dev/develop",
+  metadataBase,
+  title: {
+    default: siteConfig.name,
+    template: `%s · ${siteConfig.shortName}`,
+  },
+  description: siteConfig.description,
+  openGraph: {
+    type: "website",
+    locale: "en_US",
+    url: metadataBase,
+    siteName: siteConfig.name,
+    title: siteConfig.name,
+    description: siteConfig.description,
+  },
+  twitter: {
+    card: "summary",
+    title: siteConfig.name,
+    description: siteConfig.description,
+  },
+  robots: {
+    index: true,
+    follow: true,
+  },
 };
 
 export default function RootLayout({

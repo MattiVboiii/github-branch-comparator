@@ -1,11 +1,8 @@
 allowBuilds:
-  msw: set this to true or false
-  sharp: set this to true or false
-  unrs-resolver: set this to true or false
-
-ignoredBuiltDependencies:
-  - sharp
-  - unrs-resolver
+  esbuild: true
+  msw: true
+  sharp: true
+  unrs-resolver: true
 
 overrides:
   postcss: ">=8.5.10"

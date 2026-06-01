@@ -91,6 +91,14 @@ function createSseFromPayload(payload: CompletedScan): NextResponse {
     start(controller) {
       controller.enqueue(
         encoder.encode(
+          `data: ${JSON.stringify({
+            type: "cached",
+            expiresInSeconds: Math.round(SCAN_CACHE_TTL_MS / 1000),
+          })}\n\n`,
+        ),
+      );
+      controller.enqueue(
+        encoder.encode(
           `data: ${JSON.stringify({ type: "start", total: payload.total })}\n\n`,
         ),
       );
@@ -109,6 +117,7 @@ function createSseFromPayload(payload: CompletedScan): NextResponse {
           `data: ${JSON.stringify({
             type: "complete",
             results: payload.results,
+            fromCache: true,
           })}\n\n`,
         ),
       );
@@ -455,6 +464,7 @@ export async function GET(request: NextRequest) {
               `data: ${JSON.stringify({
                 type: "complete",
                 results: payload.results,
+                fromCache: false,
               })}\n\n`,
             ),
           );

@@ -113,3 +113,7 @@ These are used to read repository and branch information needed for comparisons.
   - `http://localhost:3000/api/auth/callback/github`
 - No repositories shown: verify your account has repo access and granted scopes.
 - Production deployment: set `NEXTAUTH_URL` to your live domain and update the OAuth callback URL to match.
+
+## License
+
+This project is licensed under the [MIT License](LICENSE). You may use, modify, and distribute it freely. If you share the code (including modified versions), you must include the license file and keep the copyright notice that credits **MattiVboiii**.

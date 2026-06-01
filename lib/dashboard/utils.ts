@@ -115,6 +115,26 @@ export function getCompareUrl(
   return `https://github.com/${repo}/compare/${encodeURIComponent(baseBranch)}...${fullSha}`;
 }
 
+export function getBranchCompareUrl(
+  repo: string,
+  baseBranch: string,
+  compareBranch: string,
+): string {
+  return `https://github.com/${repo}/compare/${encodeURIComponent(baseBranch)}...${encodeURIComponent(compareBranch)}`;
+}
+
+export function getCreatePrUrl(
+  repo: string,
+  baseBranch: string,
+  compareBranch: string,
+): string {
+  return `${getBranchCompareUrl(repo, baseBranch, compareBranch)}?expand=1`;
+}
+
+export function getRepoUrl(repo: string): string {
+  return `https://github.com/${repo}`;
+}
+
 export function formatCommitTimestamp(iso: string | null): string {
   if (!iso) return "--";
   const date = new Date(iso);
