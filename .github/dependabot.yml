@@ -1,0 +1,15 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 1
+    target-branch: main
+    labels:
+      - dependencies
+    groups:
+      all-dependencies:
+        patterns:
+          - "*"
