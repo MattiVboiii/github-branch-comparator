@@ -1,0 +1,212 @@
+name: Dependabot auto-merge
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: dependabot-automerge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pull-requests: write
+  checks: read
+  statuses: read
+
+jobs:
+  automerge:
+    name: Dependabot auto-merge
+    if: github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Wait for checks and squash-merge
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+          import time
+
+          PR_NUMBER = int(os.environ["PR_NUMBER"])
+          OWNER, REPO = os.environ["REPO"].split("/", 1)
+          POLL_SECONDS = 15
+          TIMEOUT_SECONDS = 18 * 60
+          SELF_JOB = "Dependabot auto-merge"
+          SELF_WORKFLOW = "Dependabot auto-merge"
+          OK_CONCLUSIONS = {"SUCCESS", "NEUTRAL", "SKIPPED"}
+          OK_STATES = {"SUCCESS"}
+          PENDING_CONTEXT_STATES = {"PENDING", "EXPECTED"}
+
+          QUERY = """
+          query ($owner: String!, $name: String!, $number: Int!) {
+            repository(owner: $owner, name: $name) {
+              pullRequest(number: $number) {
+                commits(last: 1) {
+                  nodes {
+                    commit {
+                      oid
+                      statusCheckRollup {
+                        contexts(first: 100) {
+                          nodes {
+                            __typename
+                            ... on CheckRun {
+                              name
+                              status
+                              conclusion
+                              checkSuite {
+                                workflowRun {
+                                  workflow {
+                                    name
+                                  }
+                                }
+                              }
+                            }
+                            ... on StatusContext {
+                              context
+                              state
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+          """
+
+          def graphql():
+              payload = json.dumps(
+                  {
+                      "query": QUERY,
+                      "variables": {
+                          "owner": OWNER,
+                          "name": REPO,
+                          "number": PR_NUMBER,
+                      },
+                  }
+              )
+              result = subprocess.run(
+                  ["gh", "api", "graphql", "--input", "-"],
+                  input=payload,
+                  capture_output=True,
+                  text=True,
+              )
+              if result.returncode != 0:
+                  raise RuntimeError(result.stderr or result.stdout)
+              data = json.loads(result.stdout)
+              if data.get("errors"):
+                  raise RuntimeError(json.dumps(data["errors"], indent=2))
+              return data["data"]["repository"]["pullRequest"]
+
+          def ignored(node):
+              typename = node.get("__typename")
+              if typename == "CheckRun":
+                  check_name = node.get("name") or ""
+                  workflow = (
+                      ((node.get("checkSuite") or {}).get("workflowRun") or {}).get(
+                          "workflow"
+                      )
+                      or {}
+                  ).get("name") or ""
+              else:
+                  check_name = node.get("context") or ""
+                  workflow = ""
+              if check_name == SELF_JOB or workflow == SELF_WORKFLOW:
+                  return True
+              if check_name.startswith("Cursor"):
+                  return True
+              if check_name == "Vercel Preview Comments":
+                  return True
+              return False
+
+          def evaluate(nodes):
+              pending, failed, passed, skipped = [], [], [], []
+              for node in nodes:
+                  if not node or ignored(node):
+                      if node and ignored(node):
+                          skipped.append(
+                              node.get("name") or node.get("context") or "?"
+                          )
+                      continue
+                  typename = node.get("__typename")
+                  if typename == "CheckRun":
+                      label = node.get("name") or "check"
+                      status = (node.get("status") or "").upper()
+                      conclusion = (node.get("conclusion") or "").upper()
+                      if status != "COMPLETED":
+                          pending.append(f"{label} ({status or 'UNKNOWN'})")
+                      elif conclusion in OK_CONCLUSIONS:
+                          passed.append(f"{label} ({conclusion})")
+                      else:
+                          failed.append(f"{label} ({conclusion or status})")
+                  elif typename == "StatusContext":
+                      label = node.get("context") or "status"
+                      state = (node.get("state") or "").upper()
+                      if state in PENDING_CONTEXT_STATES or not state:
+                          pending.append(f"{label} ({state or 'UNKNOWN'})")
+                      elif state in OK_STATES:
+                          passed.append(f"{label} ({state})")
+                      else:
+                          failed.append(f"{label} ({state})")
+                  else:
+                      pending.append(typename or "unknown check")
+              return pending, failed, passed, skipped
+
+          deadline = time.monotonic() + TIMEOUT_SECONDS
+          while True:
+              pr = graphql()
+              commits = (pr.get("commits") or {}).get("nodes") or []
+              commit = (commits[0].get("commit") if commits else None) or {}
+              rollup = commit.get("statusCheckRollup") or {}
+              nodes = (rollup.get("contexts") or {}).get("nodes") or []
+              pending, failed, passed, skipped = evaluate(nodes)
+
+              print(
+                  f"ignored={skipped or ['(none)']}\n"
+                  f"passed={passed or ['(none)']}\n"
+                  f"pending={pending or ['(none)']}\n"
+                  f"failed={failed or ['(none)']}",
+                  flush=True,
+              )
+
+              if failed:
+                  print("Refusing to merge: one or more checks failed.", flush=True)
+                  sys.exit(1)
+              # Do not merge until at least one non-ignored check has succeeded
+              # and nothing relevant is still running (avoids racing CI startup).
+              if passed and not pending:
+                  break
+              remaining = deadline - time.monotonic()
+              if remaining <= 0:
+                  print("Timed out waiting for status checks.", flush=True)
+                  sys.exit(1)
+              time.sleep(min(POLL_SECONDS, remaining))
+
+          print(f"Squash-merging PR #{PR_NUMBER} and deleting the branch.", flush=True)
+          merge = subprocess.run(
+              [
+                  "gh",
+                  "pr",
+                  "merge",
+                  str(PR_NUMBER),
+                  "--squash",
+                  "--delete-branch",
+              ],
+              capture_output=True,
+              text=True,
+          )
+          if merge.stdout:
+              print(merge.stdout, end="", flush=True)
+          if merge.stderr:
+              print(merge.stderr, end="", file=sys.stderr, flush=True)
+          sys.exit(merge.returncode)
+          PY
