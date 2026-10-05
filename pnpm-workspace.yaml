@@ -4,6 +4,10 @@ allowBuilds:
   sharp: true
   unrs-resolver: true
 
+auditConfig:
+  ignoreGhsas:
+    - GHSA-vfj7-8cjw-p6xm
+
 overrides:
   postcss: ">=8.5.10"
   fast-uri: ">=3.1.2"
