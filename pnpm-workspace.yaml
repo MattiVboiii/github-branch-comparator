@@ -15,4 +15,7 @@ overrides:
   hono: ">=4.12.25"
   js-yaml: ">=4.1.2"
   qs: ">=6.15.2"
-  vite: "7.3.5"
+  vite: "7.3.7"
+  zod: ">=4.6.6"
+  body-parser: ">=2.4.0"
+  undici: ">=7.30.1"
